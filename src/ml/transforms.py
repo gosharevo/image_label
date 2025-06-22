@@ -1,17 +1,18 @@
-from torchvision import transforms
-from ..utils.config import IMG_SIZE
+# src/ml/transforms.py (обновленный)
 
-val_transforms = transforms.Compose([
-    transforms.Resize((IMG_SIZE, IMG_SIZE)),
+from torchvision import transforms
+
+# --- Для обучения ---
+train_transforms = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.TrivialAugmentWide(), # <-- ДОБАВЛЕНО: Современная авто-аугментация
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
-train_transforms = transforms.Compose([
-    transforms.Resize((IMG_SIZE + 20, IMG_SIZE + 20)),
-    transforms.RandomRotation(15),
-    transforms.RandomCrop(IMG_SIZE),
-    transforms.RandomHorizontalFlip(),
+# --- Для валидации/инференса (без аугментаций) ---
+val_transforms = transforms.Compose([
+    transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])

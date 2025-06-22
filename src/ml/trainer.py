@@ -1,31 +1,51 @@
-from datetime import datetime
+# src/ml/trainer.py (версия без wandb)
 
+# --- Системные и ML библиотеки ---
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import os
 from torch.utils.data import DataLoader
-from torchvision.models import resnet18, ResNet18_Weights
-from PyQt5.QtCore import QObject, pyqtSignal
-from typing import List, Tuple
-from loguru import logger
+from sklearn.model_selection import train_test_split
+import numpy as np
+from datetime import datetime
+import os
+from typing import List, Tuple, Dict
 import matplotlib.pyplot as plt
+from pathlib import Path
 
-from ..utils.config import NUM_CLASSES, LEARNING_RATE, BATCH_SIZE, NUM_EPOCHS, MODEL_PATH
+# --- Логирование и GUI ---
+from loguru import logger
+from PyQt5.QtCore import QObject, pyqtSignal
+
+# --- Компоненты проекта ---
+from .model import ViTOrdinal
+from ..utils.config import (NUM_CLASSES, LEARNING_RATE, BATCH_SIZE, NUM_EPOCHS, MODEL_PATH,
+                            VAL_SPLIT_SIZE, RANDOM_STATE, DROP_PATH_RATE, WARMUP_EPOCHS)
 from .dataset import ImageLabelDataset, collate_fn
-from .transforms import train_transforms
+from .transforms import train_transforms, val_transforms
+
+
+# --- Вспомогательные функции ---
+
+def ordinal_logits_to_class(logits: torch.Tensor) -> torch.Tensor:
+    """Преобразует порядковые логиты в предсказанный класс (1-индексированный)."""
+    probabilities = torch.sigmoid(logits)
+    predicted_levels = (probabilities > 0.5).sum(dim=1)
+    return (1 + predicted_levels).long()
 
 
 def label_to_ordinal_target(labels: torch.Tensor, num_classes: int) -> torch.Tensor:
-    """
-    Преобразует метку класса (e.g., 2 для 0-индексации) в вектор для порядковой регрессии.
-    метка 2 (класс 3) -> [1, 1, 0, 0, 0] (для num_classes=6)
-    """
-    target = torch.zeros(labels.size(0), num_classes - 1, dtype=torch.float32)
+    """Преобразует 0-индексированные метки в бинарные цели."""
+    target = torch.zeros(labels.size(0), num_classes - 1, dtype=torch.float32, device=labels.device)
     for i, label in enumerate(labels):
         if label > 0:
-            target[i, :label] = 1
+            target[i, :label] = 1.0
     return target
+
+
+def calculate_mae(preds: torch.Tensor, targets: torch.Tensor) -> float:
+    """Вычисляет Mean Absolute Error."""
+    return torch.abs(preds - targets).float().mean().item()
 
 
 class Trainer(QObject):
@@ -35,120 +55,186 @@ class Trainer(QObject):
     def __init__(self, dataset: List[Tuple[str, int]]):
         super().__init__()
         self.dataset_list = dataset
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.run_timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
+        self.results_dir = Path("results") / self.run_timestamp
+        self.results_dir.mkdir(parents=True, exist_ok=True)
+
+    def _prepare_data(self) -> Tuple[DataLoader, DataLoader]:
+        """Разделяет данные на train/val и создает DataLoader'ы."""
+        self.progress.emit("Разделение данных на обучающий и валидационный наборы...")
+
+        paths = [item[0] for item in self.dataset_list]
+        labels = [item[1] for item in self.dataset_list]
+
+        train_paths, val_paths, train_labels, val_labels = train_test_split(
+            paths, labels, test_size=VAL_SPLIT_SIZE, random_state=RANDOM_STATE, stratify=labels)
+
+        train_list = list(zip(train_paths, train_labels))
+        val_list = list(zip(val_paths, val_labels))
+
+        logger.info(f"Размер обучающего набора: {len(train_list)}")
+        logger.info(f"Размер валидационного набора: {len(val_list)}")
+        from collections import Counter
+        logger.info(f"✅ Классы в трейне: {Counter(train_labels)}")
+        logger.info(f"✅ Классы в валидации: {Counter(val_labels)}")
+
+        train_dataset = ImageLabelDataset(train_list, transform=train_transforms)
+        val_dataset = ImageLabelDataset(val_list, transform=val_transforms)
+
+        num_workers = 2 if os.name != 'nt' and self.device.type == 'cuda' else 0
+        train_loader = DataLoader(
+            train_dataset, batch_size=BATCH_SIZE, shuffle=True,
+            num_workers=num_workers, collate_fn=collate_fn, pin_memory=True)
+        val_loader = DataLoader(
+            val_dataset, batch_size=BATCH_SIZE * 2,
+            num_workers=num_workers, collate_fn=collate_fn, pin_memory=True)
+        return train_loader, val_loader
 
     def _calculate_ordinal_pos_weights(self) -> torch.Tensor:
-        """
-        Рассчитывает pos_weight для каждого бинарного классификатора в Ordinal Regression.
-        Это ключевая техника для борьбы с дисбалансом в этой архитектуре.
-        """
-        logger.info("Расчет pos_weights для Ordinal Regression...")
-
-        # метки у нас 1-6
-        raw_labels = torch.tensor([label for _, label in self.dataset_list])
-        if len(raw_labels) == 0:
-            return torch.ones(NUM_CLASSES - 1)
-
-        # конвертируем в 0-5
-        labels_0_indexed = raw_labels - 1
-
-        ordinal_targets = label_to_ordinal_target(labels_0_indexed, NUM_CLASSES)
-
+        # ... (реализация без изменений) ...
+        raw_labels = torch.tensor([label - 1 for _, label in self.dataset_list])
+        ordinal_targets = label_to_ordinal_target(raw_labels, NUM_CLASSES)
         num_positives = torch.sum(ordinal_targets, dim=0)
         num_negatives = len(self.dataset_list) - num_positives
-
-        # Избегаем деления на ноль, если для какого-то вопроса нет позитивных примеров
-        # (что маловероятно, но лучше перестраховаться)
         pos_weight = num_negatives / (num_positives + 1e-8)
-
-        logger.info(f"Количество позитивных ответов для вопросов [>1, >2, ...]: {num_positives.tolist()}")
-        logger.info(f"Рассчитанные pos_weights: {[f'{w:.2f}' for w in pos_weight]}")
+        logger.info(f"pos_weight = {[round(float(w), 2) for w in pos_weight.cpu()]}")
 
         return pos_weight
 
+    def evaluate(self, model: nn.Module, loader: DataLoader, criterion: nn.Module) -> Dict[str, float]:
+        """Запускает цикл оценки на валидационном наборе."""
+        model.eval()
+        total_loss = 0.0
+        all_preds, all_targets = [], []
+
+        with torch.no_grad():
+            for inputs, labels_1_indexed in loader:
+                if inputs is None: continue
+                inputs, labels_1_indexed = inputs.to(self.device), labels_1_indexed.to(self.device)
+                logits = model(inputs)
+
+                loss = criterion(logits, label_to_ordinal_target(labels_1_indexed - 1, NUM_CLASSES))
+                total_loss += loss.item()
+
+                all_preds.append(ordinal_logits_to_class(logits))
+                all_targets.append(labels_1_indexed)
+
+        avg_loss = total_loss / len(loader) if len(loader) > 0 else 0
+        mae = calculate_mae(torch.cat(all_preds), torch.cat(all_targets))
+
+        return {'loss': avg_loss, 'mae': mae}
+
+    def _plot_metrics(self, history: Dict[str, List[float]]):
+        """Сохраняет графики метрик обучения."""
+        fig, ax1 = plt.subplots(figsize=(12, 6))
+
+        # График Loss
+        ax1.plot(history['train_loss'], 'b-', label='Train Loss')
+        ax1.plot(history['val_loss'], 'r-', label='Validation Loss')
+        ax1.set_xlabel('Epoch')
+        ax1.set_ylabel('Loss', color='b')
+        ax1.tick_params('y', colors='b')
+        ax1.grid(True)
+
+        # График MAE на второй оси Y
+        ax2 = ax1.twinx()
+        ax2.plot(history['val_mae'], 'g--', label='Validation MAE')
+        ax2.set_ylabel('MAE', color='g')
+        ax2.tick_params('y', colors='g')
+
+        fig.tight_layout()
+        fig.legend(loc='upper right', bbox_to_anchor=(0.9, 0.9))
+        plt.title('Training and Validation Metrics')
+
+        plot_path = self.results_dir / "training_metrics.png"
+        plt.savefig(plot_path)
+        plt.close()
+        logger.info(f"Графики обучения сохранены в: {plot_path}")
+
     def run(self):
-        logger.info("Начало процесса обучения взвешенной Ordinal Regression модели.")
         try:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            logger.info(f"Обучение будет производиться на устройстве: {device.type.upper()}")
+            logger.info(f"Начало процесса обучения. Результаты будут в: {self.results_dir}")
+            logger.info(f"Обучение на устройстве: {self.device.type.upper()}")
 
-            if len(self.dataset_list) < BATCH_SIZE:
-                raise ValueError(f"Недостаточно данных для обучения. Нужно хотя бы {BATCH_SIZE} сэмплов.")
+            # --- Подготовка данных и модели ---
+            train_loader, val_loader = self._prepare_data()
+            model = ViTOrdinal(
+                num_classes=NUM_CLASSES, pretrained=True, drop_path_rate=DROP_PATH_RATE
+            ).to(self.device)
 
-            # --- Расчет весов (КЛЮЧЕВОЕ ИЗМЕНЕНИЕ) ---
-            pos_weights = self._calculate_ordinal_pos_weights().to(device)
-
-            # --- Подготовка данных ---
-            self.progress.emit("Подготовка данных...")
-            train_dataset = ImageLabelDataset(self.dataset_list, transform=train_transforms)
-            num_workers = 0 if os.name == 'nt' else 2
-            train_loader = DataLoader(
-                train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=num_workers,
-                collate_fn=collate_fn, pin_memory=True if device.type == 'cuda' else False
-            )
-
-            # --- Инициализация модели ---
-            self.progress.emit("Инициализация модели ResNet18 для Ordinal Regression...")
-            model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
-            num_ftrs = model.fc.in_features
-            model.fc = nn.Linear(num_ftrs, NUM_CLASSES - 1)
-            model = model.to(device)
-
-            # --- Функция потерь и оптимизатор (КЛЮЧЕВОЕ ИЗМЕНЕНИЕ) ---
+            pos_weights = self._calculate_ordinal_pos_weights().to(self.device)
             criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weights)
-            optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)# --- Цикл обучения ---
-            logger.info(f"Начинаю обучение на {NUM_EPOCHS} эпох.")
+            optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
+            main_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS - WARMUP_EPOCHS,
+                                                                  eta_min=1e-6)
+            warmup_scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, total_iters=WARMUP_EPOCHS)
 
-            loss_log = []
-            epoch_losses = []
+            # --- Цикл обучения ---
+            best_val_mae = float('inf')
+            history = {'train_loss': [], 'val_loss': [], 'val_mae': []}
+            no_result_count = 0
 
             for epoch in range(NUM_EPOCHS):
                 model.train()
                 running_loss = 0.0
-                batch_losses = []
+                num_batches = len(train_loader)
 
-                for i, batch_data in enumerate(train_loader):
-                    if batch_data[0] is None:
+                self.progress.emit(f"Эпоха {epoch + 1}/{NUM_EPOCHS}...")
+                for batch_index, (inputs, labels_1_indexed) in enumerate(train_loader, 1):
+                    if inputs is None:
                         continue
+                    self.progress.emit(f"Эпоха {epoch + 1}/{NUM_EPOCHS}, батч {batch_index}/{len(train_loader)}")
 
-                    inputs, labels_0_indexed = batch_data
-                    inputs = inputs.to(device)
-                    ordinal_targets = label_to_ordinal_target(labels_0_indexed, NUM_CLASSES).to(device)
+                    inputs = inputs.to(self.device)
+                    ordinal_targets = label_to_ordinal_target(labels_1_indexed - 1, NUM_CLASSES).to(self.device)
 
                     optimizer.zero_grad()
                     logits = model(inputs)
                     loss = criterion(logits, ordinal_targets)
                     loss.backward()
                     optimizer.step()
+                    running_loss += loss.item()
 
-                    loss_value = loss.item()
-                    running_loss += loss_value
-                    batch_losses.append(loss_value)
-                    loss_log.append(loss_value)  # для batch-графика, если хочешь
+                # --- Валидация ---
+                val_metrics = self.evaluate(model, val_loader, criterion)
+                avg_train_loss = running_loss / num_batches if num_batches > 0 else 0
 
-                    self.progress.emit(
-                        f"Эпоха {epoch + 1}/{NUM_EPOCHS} | Батч {i + 1}/{len(train_loader)} | Loss: {loss_value:.4f}"
-                    )
+                # --- Логирование и сохранение истории ---
+                history['train_loss'].append(avg_train_loss)
+                history['val_loss'].append(val_metrics['loss'])
+                history['val_mae'].append(val_metrics['mae'])
 
-                epoch_avg_loss = running_loss / len(batch_losses) if batch_losses else 0
-                epoch_losses.append(epoch_avg_loss)
-                logger.info(f"Эпоха {epoch + 1} завершена. Средний loss: {epoch_avg_loss:.4f}")
+                logger.info(
+                    f"Эпоха {epoch + 1}: Train Loss={avg_train_loss:.4f}, "
+                    f"Val Loss={val_metrics['loss']:.4f}, Val MAE={val_metrics['mae']:.4f}, "
+                    f"LR={optimizer.param_groups[0]['lr']:.6f}"
+                )
 
-            plt.plot(range(1, len(loss_log) + 1), loss_log)
-            plt.xlabel('Batch')
-            plt.ylabel('Loss')
-            plt.title('Batch\Loss')
-            filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + '.jpg'
-            plt.savefig(filename)
-            plt.close()
+                # --- Обновление LR и сохранение лучшей модели ---
+                if epoch < WARMUP_EPOCHS:
+                    warmup_scheduler.step()
+                else:
+                    main_scheduler.step()
 
-            # --- Сохранение модели ---
-            self.progress.emit("Сохраняю модель...")
-            MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), MODEL_PATH)
+                if val_metrics['mae'] < best_val_mae:
+                    best_val_mae = val_metrics['mae']
+                    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    torch.save(model.state_dict(), str(MODEL_PATH))
+                    logger.success(f"Новая лучшая модель сохранена! Val MAE: {best_val_mae:.4f}")
+                    no_result_count = 0
+                else:
+                    no_result_count += 1
+                    if no_result_count == 3:
+                        logger.info('За 3 эпохи ничего не улучшилось, остановка...')
+                        break
 
-            logger.success("Взвешенная Ordinal Regression модель успешно обучена и сохранена.")
-            self.finished.emit(True, "Обучение завершено. Модель сохранена.")
+            # --- Финализация ---
+            self._plot_metrics(history)
+            logger.success(f"Обучение завершено. Лучшая модель сохранена в {MODEL_PATH} с Val MAE: {best_val_mae:.4f}")
+            self.finished.emit(True, f"Обучение завершено. Лучшая модель с MAE={best_val_mae:.2f} сохранена.")
 
         except Exception as e:
             logger.critical(f"Критическая ошибка в процессе обучения: {e}", exc_info=True)
             self.finished.emit(False, f"Ошибка обучения: {e}")
+

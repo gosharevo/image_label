@@ -1,3 +1,4 @@
+# src/ui/main_window.py
 import os
 import hashlib
 from PyQt5.QtWidgets import (
@@ -208,7 +209,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(WINDOW_TITLE)
         self.setStyleSheet(STYLESHEET)
 
-        app_icon = self.style().standardIcon(QStyle.SP_ComputerIcon)
+        app_icon = self.style().standardIcon(QStyle.SP_MediaPlay)
         self.setWindowIcon(app_icon)
 
         self._create_menu_bar()
@@ -497,7 +498,10 @@ class MainWindow(QMainWindow):
         if item_to_select:
             self.file_list_widget.setCurrentItem(item_to_select)
         elif self.file_list_widget.count() > 0:
-            self.file_list_widget.setCurrentRow(0)
+            i = 0
+            while self.state.all_image_paths[i] in self.state.annotations:
+                i += 1
+            self.file_list_widget.setCurrentRow(i)
 
     def rate_image(self, label: int):
         if not self.current_image_path: return

@@ -27,10 +27,10 @@ DEVICE = 'cuda'
 # --- Параметры ML модели ---
 IMG_SIZE = 224
 NUM_CLASSES = 6
-BATCH_SIZE = 16
+BATCH_SIZE = 4
 LEARNING_RATE = 0.001
-NUM_EPOCHS = 10
-GRAD_MODE = "fade" # or jet
+NUM_EPOCHS = 20
+GRAD_MODE = "fade" # fade or jet
 
 # --- Строки интерфейса ---
 WINDOW_TITLE = "Ручная разметка изображений v1.1 (Pro Edition)"
@@ -39,3 +39,9 @@ MODEL_PREDICTION_TEXT = "КЛАСС: {}\nВЕРОЯТНОСТЬ: {:.2f}"
 MODEL_ALREADY_LABELED_TEXT = "[УЖЕ РАЗМЕЧЕНО]"
 MODEL_NOT_TRAINED_TEXT = "[МОДЕЛЬ НЕ ОБУЧЕНА]"
 MODEL_NO_PREDICTION_TEXT = "[НЕТ ПРЕДСКАЗАНИЯ]"
+
+
+VAL_SPLIT_SIZE = 0.2  # 20% данных на валидацию
+RANDOM_STATE = 42     # Для воспроизводимости разделения
+DROP_PATH_RATE = 0.1  # Шанс "выключения" блока ViT для регуляризации
+WARMUP_EPOCHS = 1     # Количество эпох для "разогрева" скорости обучения

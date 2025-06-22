@@ -26,11 +26,8 @@ def find_image_files(root_dir: str) -> List[str]:
     for ext in SUPPORTED_IMAGE_FORMATS:
         image_paths.extend(root_path.rglob(f"*{ext}"))
 
-    for image in image_paths[:10]:
-        print(image, image.name)
-
     # Конвертируем Path объекты в строки и сортируем для консистентности
-    filtered_paths = [p for p in image_paths if p.parent.name != 'other']
+    filtered_paths = [p for p in image_paths]
     filtered_paths.sort(key=lambda x: (str(x.parent.name) + str(x.name)).lower())
     sorted_paths = [str(p) for p in filtered_paths]
     logger.success(f"Найдено {len(sorted_paths)} изображений.")

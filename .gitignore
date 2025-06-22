@@ -1,5 +1,6 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
+.idea/
 *.py[cod]
 *$py.class
 
@@ -42,6 +43,7 @@ ENV/
 *.pt
 data.json
 predictions.json
+filelist.json
 *.jpg
 
 test.py
