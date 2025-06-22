@@ -1,0 +1,8 @@
+pyqt5
+torch
+torchvision
+loguru
+numpy
+Pillow
+opencv-python
+matplotlib
