@@ -14,7 +14,7 @@ MODEL_PATH = MODEL_DIR / "latest.pt"
 LOG_FILE_PATH = LOGS_DIR / "app.log"
 
 # --- Параметры приложения ---
-SUPPORTED_IMAGE_FORMATS = (".jpg", ".jpeg", ".png", ".bmp", ".gif")
+SUPPORTED_IMAGE_FORMATS = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp")
 INFERENCE_BATCH_SIZE = 10
 
 # --- НОВАЯ НАСТРОЙКА: Стартовая папка для диалога выбора файлов ---
@@ -45,3 +45,5 @@ VAL_SPLIT_SIZE = 0.2  # 20% данных на валидацию
 RANDOM_STATE = 42     # Для воспроизводимости разделения
 DROP_PATH_RATE = 0.1  # Шанс "выключения" блока ViT для регуляризации
 WARMUP_EPOCHS = 1     # Количество эпох для "разогрева" скорости обучения
+
+BACKUP_PATH = r"E:\data.json"

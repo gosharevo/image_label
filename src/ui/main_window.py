@@ -1,6 +1,8 @@
 # src/ui/main_window.py
 import os
 import hashlib
+import shutil
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QLabel,
     QPushButton, QFileDialog, QSplitter, QGroupBox, QProgressBar, QMessageBox,
@@ -18,7 +20,7 @@ from src.utils.config import (
     WINDOW_TITLE, INFERENCE_BATCH_SIZE, MODEL_VERDICT_HEADER,
     MODEL_PREDICTION_TEXT, MODEL_ALREADY_LABELED_TEXT,
     MODEL_NOT_TRAINED_TEXT, MODEL_NO_PREDICTION_TEXT, DEFAULT_START_FOLDER,
-    MODEL_PATH, GRAD_CAM_DIR, NUM_CLASSES, BATCH_SIZE
+    MODEL_PATH, GRAD_CAM_DIR, NUM_CLASSES, BATCH_SIZE, BACKUP_PATH
 )
 from src.ml.trainer import Trainer
 from src.ml.predictor import Predictor
@@ -633,10 +635,17 @@ class MainWindow(QMainWindow):
         self.request_ui_update.emit()
 
     def closeEvent(self, event):
+        if os.path.exists(BACKUP_PATH):
+            os.remove(BACKUP_PATH)
+        shutil.copy('data.json', BACKUP_PATH)
+        logger.success('Бэкап сделан')
+
         if self.is_busy():
-            reply = QMessageBox.question(self, 'Подтверждение',
-                                         "Фоновый процесс еще выполняется. Вы уверены, что хотите выйти?",
-                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            reply = QMessageBox.question(
+                self, 'Подтверждение',
+                "Фоновый процесс еще выполняется. Вы уверены, что хотите выйти?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
             if reply == QMessageBox.Yes:
                 if self.thread and self.thread.isRunning():
                     logger.warning("Попытка корректно завершить поток...")
@@ -650,4 +659,6 @@ class MainWindow(QMainWindow):
                 event.ignore()
         else:
             event.accept()
+
+
 

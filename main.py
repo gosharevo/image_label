@@ -1,8 +1,8 @@
- 
 import sys
 from PyQt5.QtWidgets import QApplication
 from src.ui.main_window import MainWindow
 from src.utils.logger import setup_logger, logger
+
 
 def main():
     # 1. Инициализация логгера. Это первый и самый важный шаг.
@@ -18,11 +18,12 @@ def main():
         window.show()
     except Exception as e:
         logger.critical(f"Критическая ошибка при инициализации главного окна: {e}")
-        logger.exception(e) # Логируем полный traceback
-        sys.exit(1) # Завершаем приложение с кодом ошибки
+        logger.exception(e)  # Логируем полный traceback
+        sys.exit(1)  # Завершаем приложение с кодом ошибки
 
     # 4. Запуск основного цикла событий
     sys.exit(app.exec_())
+
 
 if __name__ == '__main__':
     main()

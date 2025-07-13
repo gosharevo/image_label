@@ -74,6 +74,7 @@ def safe_copy_file(src_path: str, dst_path: str):
         logger.debug(f"Файл успешно скопирован из '{src_path}' в '{dst_path}'.")
     except Exception as e:
         logger.error(f"Ошибка при копировании файла из '{src_path}' в '{dst_path}': {e}")
+
         # Попытка удалить временный файл, если он остался
         if 'tmp_path' in locals() and os.path.exists(tmp_path):
             os.remove(tmp_path)
