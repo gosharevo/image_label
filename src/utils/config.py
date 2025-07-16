@@ -1,49 +1,56 @@
-import os
+# src/utils/config.py
+
+import torch
 from pathlib import Path
 
-# --- Базовые пути ---
+# --- Базовая директория проекта ---
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = BASE_DIR / "dataset"
-MODEL_DIR = BASE_DIR / "model"
-LOGS_DIR = BASE_DIR / "logs"
 
-# --- Файлы данных ---
-DATA_JSON_PATH = BASE_DIR / "data.json"
-PREDICTIONS_JSON_PATH = BASE_DIR / "predictions.json"
-MODEL_PATH = MODEL_DIR / "latest.pt"
-LOG_FILE_PATH = LOGS_DIR / "app.log"
+# --- КЛЮЧЕВЫЕ ПУТИ К ДАННЫМ ---
 
-# --- Параметры приложения ---
-SUPPORTED_IMAGE_FORMATS = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp")
-INFERENCE_BATCH_SIZE = 10
+# 1. Файл-база данных аннотаций (Единый источник правды)
+# Этот JSON хранит отображение {оригинальный_путь: метка}.
+# Модель теперь будет обучаться напрямую на путях из этого файла.
+DATA_PATH = BASE_DIR / "data.json"
+LOG_FILE_PATH = BASE_DIR / 'logs' / 'app.log'
 
-# --- НОВАЯ НАСТРОЙКА: Стартовая папка для диалога выбора файлов ---
-# Path.home() - это домашняя директория пользователя (e.g., C:/Users/YourUser)
-# Можете заменить на конкретный путь: "F:/gosha/Iphone"
-DEFAULT_START_FOLDER = str(Path(r"E:\Downloads\jpg"))
-GRAD_CAM_DIR = BASE_DIR / "grad_cam_maps"
+# 2. Папка для резервных копий файла аннотаций
+BACKUP_PATH = BASE_DIR / "backups"
+BACKUP_PATH.mkdir(exist_ok=True)
 
-DEVICE = 'cuda'
-# --- Параметры ML модели ---
-IMG_SIZE = 224
+# 3. Пути для моделей
+MODEL_DIR = BASE_DIR / "models"
+MODEL_DIR.mkdir(exist_ok=True)
+MODEL_PATH = MODEL_DIR / "best_model.pth"
+
+# 4. Папка для кэша
+CACHE_DIR = BASE_DIR / "cache"
+CACHE_DIR.mkdir(exist_ok=True)
+
+
+# --- Параметры модели и обучения ---
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NUM_CLASSES = 6
-BATCH_SIZE = 4
-LEARNING_RATE = 0.001
-NUM_EPOCHS = 20
-GRAD_MODE = "fade" # fade or jet
+BATCH_SIZE = 32
+NUM_EPOCHS = 50
+LEARNING_RATE = 1e-4
+DROP_PATH_RATE = 0.1
 
-# --- Строки интерфейса ---
-WINDOW_TITLE = "Ручная разметка изображений v1.1 (Pro Edition)"
-MODEL_VERDICT_HEADER = "ВЕРДИКТ МОДЕЛИ:"
-MODEL_PREDICTION_TEXT = "КЛАСС: {}\nВЕРОЯТНОСТЬ: {:.2f}"
-MODEL_ALREADY_LABELED_TEXT = "[УЖЕ РАЗМЕЧЕНО]"
-MODEL_NOT_TRAINED_TEXT = "[МОДЕЛЬ НЕ ОБУЧЕНА]"
-MODEL_NO_PREDICTION_TEXT = "[НЕТ ПРЕДСКАЗАНИЯ]"
+# --- Параметры разделения данных и планировщика ---
+VAL_SPLIT_SIZE = 0.15
+RANDOM_STATE = 42
+WARMUP_EPOCHS = 5
+EARLY_STOPPING_PATIENCE = 10
 
+# --- Параметры UI и инференса ---
+WINDOW_TITLE = "Система разметки и анализа изображений v3.1 (Упрощенная)"
+DEFAULT_START_FOLDER = r"E:\Downloads\jpg"
+INFERENCE_BATCH_SIZE = 5
 
-VAL_SPLIT_SIZE = 0.2  # 20% данных на валидацию
-RANDOM_STATE = 42     # Для воспроизводимости разделения
-DROP_PATH_RATE = 0.1  # Шанс "выключения" блока ViT для регуляризации
-WARMUP_EPOCHS = 1     # Количество эпох для "разогрева" скорости обучения
+# --- Текстовые константы для UI ---
+MODEL_VERDICT_HEADER = "Вердикт модели"
+MODEL_PREDICTION_TEXT = "Предсказание: <b>Класс {}</b><br>Уверенность: <b>{:.1%}</b>"
+MODEL_ALREADY_LABELED_TEXT = "Изображение оценено: <b>Класс {}</b>"
+MODEL_NOT_TRAINED_TEXT = "Модель не обучена."
+MODEL_NO_PREDICTION_TEXT = "Предсказания для этого файла нет.\nНажмите 'Получить подсказки'."
 
-BACKUP_PATH = r"E:\data.json"

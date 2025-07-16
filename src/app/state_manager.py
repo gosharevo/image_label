@@ -1,143 +1,159 @@
+# src/app/state_manager.py
+
 import json
 import os
+import shutil
 from pathlib import Path
-from typing import Dict, List, Tuple
+from enum import Enum, auto
+from typing import List, Dict, Optional, Tuple
 from loguru import logger
+from PyQt5.QtCore import QObject, pyqtSignal
 
-from . import file_handler
-from ..utils.config import DATA_JSON_PATH, PREDICTIONS_JSON_PATH, DATA_DIR
+# Импортируем из нашего обновленного модуля
+from src.app import file_handler
+# Импортируем константы из центрального конфига
+from src.utils.config import DATA_PATH, BACKUP_PATH
+from src.ml.predictor import PredictionResult
 
 
-class StateManager:
-    """
-    Управляет состоянием приложения: списки файлов, аннотации, предсказания.
-    Обеспечивает атомарность операций с JSON и файлами.
-    """
+class AppState(Enum):
+    IDLE = auto()
+    TRAINING = auto()
+    INFERRING = auto()
+    LOADING = auto()
+
+
+class StateManager(QObject):
+    state_changed = pyqtSignal(AppState)
+    annotations_changed = pyqtSignal()
+    predictions_changed = pyqtSignal()
+    file_list_updated = pyqtSignal()
 
     def __init__(self):
+        super().__init__()
+        self._app_state: AppState = AppState.IDLE
+        self._current_image_path: Optional[str] = None
+
         self.all_image_paths: List[str] = []
         self.annotations: Dict[str, int] = {}
-        self.predictions: Dict[str, List] = {}
-        self._load_state()
+        self.predictions: Dict[str, PredictionResult] = {}
 
-    def _load_state(self):
-        """Загружает аннотации и предсказания из JSON файлов, устойчиво к ошибкам."""
-        for path, state_dict_name in [(DATA_JSON_PATH, "annotations"), (PREDICTIONS_JSON_PATH, "predictions")]:
-            try:
-                if os.path.exists(path) and os.path.getsize(path) > 0:
-                    with open(path, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        setattr(self, state_dict_name, data)
-                    logger.info(f"Загружено {len(getattr(self, state_dict_name))} записей из {path}")
-                else:
-                    logger.warning(
-                        f"Файл {path} не найден или пуст. Начинаем с пустым состоянием для '{state_dict_name}'.")
-                    setattr(self, state_dict_name, {})
-            except json.JSONDecodeError as e:
-                logger.error(
-                    f"Ошибка декодирования JSON в файле {path}. Файл может быть поврежден. Сбрасываю состояние. Ошибка: {e}")
-                setattr(self, state_dict_name, {})  # Сброс до пустого словаря при ошибке
-            except Exception as e:
-                logger.error(f"Не удалось загрузить состояние из {path}: {e}")
+        self._load_annotations()
 
-    def _save_state_atomic(self, file_path: Path, data: Dict):
-        """Атомарно сохраняет словарь в JSON файл."""
-        temp_path = file_path.with_suffix('.json.tmp')
+        from src.utils.config import NUM_CLASSES
+        self.config = lambda: None
+        self.config.num_classes = NUM_CLASSES
+
+    @property
+    def app_state(self) -> AppState:
+        return self._app_state
+
+    def set_app_state(self, new_state: AppState):
+        if self._app_state != new_state:
+            logger.debug(f"Состояние приложения: {self._app_state.name} -> {new_state.name}")
+            self._app_state = new_state
+            self.state_changed.emit(new_state)
+
+    @property
+    def current_image_path(self) -> Optional[str]:
+        return self._current_image_path
+
+    def set_current_image(self, path: Optional[str]):
+        if self._current_image_path != path:
+            self._current_image_path = path
+            self.state_changed.emit(self.app_state)
+
+    def _load_annotations(self):
+        try:
+            if DATA_PATH.exists() and DATA_PATH.stat().st_size > 0:
+                with open(DATA_PATH, 'r', encoding='utf-8') as f:
+                    self.annotations = json.load(f)
+                logger.info(f"Загружено {len(self.annotations)} аннотаций из {DATA_PATH}")
+            else:
+                self.annotations = {}
+        except Exception as e:
+            logger.error(f"Ошибка загрузки аннотаций {DATA_PATH}: {e}. Начинаем с пустым словарем.")
+            self.annotations = {}
+
+    def _save_annotations_atomic(self):
+        temp_path = DATA_PATH.with_suffix('.json.tmp')
         try:
             with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=4, ensure_ascii=False)
-            # os.replace является атомарной операцией и перезаписывает файл, если он существует (кроссплатформенно)
-            os.replace(temp_path, file_path)
+                json.dump(self.annotations, f, indent=2, ensure_ascii=False)
+            os.replace(temp_path, DATA_PATH)
+            logger.debug("Файл аннотаций атомарно сохранен.")
         except Exception as e:
-            logger.critical(f"Критическая ошибка при сохранении файла состояния {file_path}: {e}")
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-            # Пробрасываем ошибку, чтобы транзакция могла быть отменена
-            raise
+            logger.error(f"Критическая ошибка при сохранении {DATA_PATH}: {e}")
+            if temp_path.exists(): os.remove(temp_path)
+            # В этой упрощенной модели мы не будем делать откат, просто сообщим об ошибке.
+            # Для надежности можно было бы пробросить исключение, но это усложнит UI.
 
     def load_images_from_folder(self, folder_path: str):
-        self.all_image_paths = file_handler.find_image_files(folder_path)
-
-        # Фильтрация только существующих аннотаций
-        paths_set = set(self.all_image_paths)
-        prev_len = len(self.annotations)
-        self.annotations = {p: l for p, l in self.annotations.items() if p in paths_set}
-        if len(self.annotations) != prev_len:
-            logger.warning("Очищены аннотации для отсутствующих файлов.")
-            # Немедленно сохраняем очищенное состояние
-            try:
-                self._save_state_atomic(DATA_JSON_PATH, self.annotations)
-            except Exception:
-                # Если сохранение не удалось, логируем, но не падаем
-                logger.error("Не удалось сохранить очищенные аннотации.")
-
-    def get_unannotated_images(self) -> List[str]:
-        annotated_set = set(self.annotations.keys())
-        return [p for p in self.all_image_paths if p not in annotated_set]
-
-    def update_annotation(self, image_path: str, new_label: int) -> bool:
-        """
-        Главная транзакционная функция. Обновляет аннотацию, перемещает/копирует файл.
-        В случае любой ошибки откатывает изменения.
-        """
-        old_label = self.annotations.get(image_path)
-        new_filename = file_handler.generate_new_filename(image_path)
-        new_dst_path = str(DATA_DIR / str(new_label) / new_filename)
-
-        # Создаем копию аннотаций для отката
-        original_annotations = self.annotations.copy()
-
+        self.set_app_state(AppState.LOADING)
         try:
-            # Сначала обновляем состояние в памяти. Это наш "коммит".
-            self.annotations[image_path] = new_label
-            # Теперь пытаемся синхронизировать файловую систему и сохранить JSON.
-
-            # Сохраняем JSON. Если это не удастся, вылетит исключение, файловые операции не начнутся.
-            self._save_state_atomic(DATA_JSON_PATH, self.annotations)
-
-            # Если JSON сохранен, выполняем файловые операции.
-            if old_label is not None:
-                if old_label != new_label:
-                    old_filename = file_handler.generate_new_filename(image_path)
-                    old_dst_path = str(DATA_DIR / str(old_label) / old_filename)
-                    if os.path.exists(old_dst_path):
-                        file_handler.safe_move_file(old_dst_path, new_dst_path)
-                    else:
-                        logger.warning(
-                            f"Исходный файл {old_dst_path} не найден для перемещения. Только запись в JSON обновлена.")
-            else:
-                file_handler.safe_copy_file(image_path, new_dst_path)
-
-            logger.info(f"Аннотация для '{image_path}' обновлена на класс {new_label}.")
-            return True
-
+            image_paths_from_scan = list(file_handler.find_image_files_recursively(folder_path))
+            self.all_image_paths = sorted(image_paths_from_scan, key=lambda x: Path(x).parent.name.lower())
+            logger.success(f"Завершено. Всего найдено {len(self.all_image_paths)} изображений.")
+            self.file_list_updated.emit()
         except Exception as e:
-            # Откат изменений
-            logger.error(f"Транзакция по обновлению аннотации для '{image_path}' провалена. Откат. Ошибка: {e}")
-            self.annotations = original_annotations  # Восстанавливаем состояние в памяти
-            # Пытаемся сохранить на диск откаченное состояние
-            try:
-                self._save_state_atomic(DATA_JSON_PATH, self.annotations)
-                logger.info("Состояние аннотаций успешно отменено и сохранено.")
-            except Exception as save_err:
-                logger.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось даже откатить состояние data.json! Ошибка: {save_err}")
-            return False
+            logger.error(f"Ошибка при сканировании папки: {e}")
+        finally:
+            self.set_app_state(AppState.IDLE)
 
-    def update_predictions(self, new_predictions: Dict[str, List]):
-        self.predictions.update(new_predictions)
+    def update_annotation(self, image_path: str, new_label: int):
+        """
+        Упрощенная функция. Просто обновляет словарь и сохраняет JSON.
+        Никаких операций с файлами.
+        """
         try:
-            self._save_state_atomic(PREDICTIONS_JSON_PATH, self.predictions)
-            logger.info(f"Сохранено {len(new_predictions)} новых предсказаний.")
+            # Шаг 1: Обновить состояние в памяти
+            self.annotations[image_path] = new_label
+            # Шаг 2: Сохранить на диск
+            self._save_annotations_atomic()
+            # Шаг 3: Оповестить UI
+            self.annotations_changed.emit()
+            logger.info(f"Аннотация для '{Path(image_path).name}' обновлена на класс {new_label}.")
+        except Exception as e:
+            logger.error(f"Не удалось сохранить аннотацию для {image_path}: {e}")
+            # Откат не нужен, т.к. ошибка произошла при сохранении, в памяти останется новое значение,
+            # но при следующем запуске загрузится старое, что является консистентным поведением.
+
+    def update_predictions(self, new_predictions: Dict[str, PredictionResult]):
+        serializable_preds = {path: result.__dict__ for path, result in new_predictions.items()}
+        self.predictions.update(new_predictions)
+
+        try:
+            predictions_path = DATA_PATH.parent / "predictions.json"
+            with open(predictions_path, 'w', encoding='utf-8') as f:
+                for v in serializable_preds.values():
+                    if isinstance(v['visualization_path'], Path): v['visualization_path'] = str(v['visualization_path'])
+                json.dump(serializable_preds, f, indent=2)
         except Exception as e:
             logger.error(f"Не удалось сохранить предсказания: {e}")
 
+        self.predictions_changed.emit()
+        self.state_changed.emit(self.app_state)
+
     def get_full_dataset_for_training(self) -> List[Tuple[str, int]]:
-        dataset = []
-        for img_path, label in self.annotations.items():
-            filename = file_handler.generate_new_filename(img_path)
-            dataset_filepath = str(DATA_DIR / str(label) / filename)
-            if os.path.exists(dataset_filepath):
-                dataset.append((dataset_filepath, label))
-            else:
-                logger.warning(f"Файл {dataset_filepath} для обучения не найден, пропущен.")
-        return dataset
+        """
+        Возвращает датасет для обучения. Теперь он состоит из оригинальных путей.
+        Trainer будет работать с ними напрямую.
+        """
+        return list(self.annotations.items())
+
+    def get_unannotated_images(self) -> List[str]:
+        return [path for path in self.all_image_paths if path not in self.annotations]
+
+    def backup_annotations(self):
+        if not DATA_PATH.exists(): return
+        try:
+            from datetime import datetime
+            now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            BACKUP_PATH.mkdir(parents=True, exist_ok=True)
+            backup_file = BACKUP_PATH / f"data.{now_str}.json"
+            shutil.copy(DATA_PATH, backup_file)
+            logger.success(f"Бэкап аннотаций создан: {backup_file}")
+        except Exception as e:
+            logger.error(f"Ошибка при создании бэкапа: {e}")
+
+

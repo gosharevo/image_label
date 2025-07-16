@@ -1,53 +1,75 @@
-import torch
+# src/ml/dataset.py
+
 from torch.utils.data import Dataset
-from PIL import Image
-from typing import List, Tuple, Callable
+from typing import List, Tuple, Optional, Callable
+from PIL import Image, UnidentifiedImageError
 from loguru import logger
+import torch
+
+Image.MAX_IMAGE_PIXELS = None
 
 class ImageLabelDataset(Dataset):
-    """Кастомный датасет для PyTorch."""
-    def __init__(self, data: List[Tuple[str, int]], transform: Callable):
-        self.data = data
+    """
+    Датасет, который принимает список пар (путь_к_файлу, метка).
+    Ключевое улучшение: он теперь отказоустойчив. Если изображение
+    не удается открыть, он логирует ошибку и возвращает None,
+    чтобы DataLoader мог его отфильтровать.
+    """
+
+    def __init__(self, file_list: List[Tuple[str, int]], transform: Optional[Callable] = None):
+        self.file_list = file_list
         self.transform = transform
 
-    def __len__(self):
-        return len(self.data)
+    def __len__(self) -> int:
+        return len(self.file_list)
 
-    def __getitem__(self, idx):
-        img_path, label = self.data[idx]
+    def __getitem__(self, index: int) -> Optional[Tuple[torch.Tensor, int]]:
+        """
+        Загружает одно изображение и его метку.
+        Возвращает None в случае любой ошибки чтения файла.
+        """
+        img_path, label = self.file_list[index]
+
         try:
+            # Открываем изображение
             image = Image.open(img_path).convert("RGB")
-            if self.transform:
-                image = self.transform(image)
-            return image, label - 1
-        except Exception:
-            logger.error(f"Не удалось прочитать или обработать файл {img_path}. Пропускаю.", exc_info=True)
-            return None, None
 
-def collate_fn(batch):
-    """
-    Функция для DataLoader, которая отфильтровывает "битые" данные (None),
-    возвращаемые из __getitem__ в случае ошибки.
-    """
-    batch = list(filter(lambda x: x[0] is not None, batch))
-    return torch.utils.data.dataloader.default_collate(batch) if batch else (None, None)
+            # Применяем трансформации, если они есть
+            if self.transform:
+                image_tensor = self.transform(image)
+
+            return image_tensor, label
+
+        except FileNotFoundError:
+            logger.warning(f"Файл не найден, пропущен: {img_path}")
+            return None
+        except (IOError, UnidentifiedImageError, ValueError) as e:
+            logger.warning(f"Файл поврежден или не может быть открыт, пропущен: {img_path}. Ошибка: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Непредвиденная ошибка при обработке файла {img_path}: {e}")
+            return None
+
 
 class InferenceDataset(Dataset):
-    """Датасет для инференса, работает без меток."""
-    def __init__(self, image_paths: List[str], transform: Callable):
-        self.image_paths = image_paths
+    """
+    Отказоустойчивый датасет для инференса (возвращает путь к файлу).
+    """
+
+    def __init__(self, file_paths: List[str], transform: Optional[Callable] = None):
+        self.file_paths = file_paths
         self.transform = transform
 
-    def __len__(self):
-        return len(self.image_paths)
+    def __len__(self) -> int:
+        return len(self.file_paths)
 
-    def __getitem__(self, idx):
-        img_path = self.image_paths[idx]
+    def __getitem__(self, index: int) -> Optional[Tuple[torch.Tensor, str]]:
+        img_path = self.file_paths[index]
         try:
             image = Image.open(img_path).convert("RGB")
             if self.transform:
-                image = self.transform(image)
-            return image, img_path
-        except Exception:
-            logger.error(f"Не удалось прочитать файл для инференса: {img_path}", exc_info=True)
-            return None, None
+                image_tensor = self.transform(image)
+            return image_tensor, img_path
+        except Exception as e:
+            logger.warning(f"Файл для инференса не может быть открыт, пропущен: {img_path}. Ошибка: {e}")
+            return None
